@@ -1,54 +1,47 @@
 #!/bin/bash
 
 # Define input, output, and job directories
-input_dir="/n/holystore01/LABS/huttenhower_lab/Lab/data/hmp1_II_Stool_concat_postknead/"
-output_dir="/n/netscratch/huttenhower_lab/Lab/Users/Dongyu/HMP1-II_humann/"
-job_dir="/n/netscratch/huttenhower_lab/Lab/Users/Dongyu/humann_jobs"
-file_list="/n/netscratch/huttenhower_lab/Lab/Users/Dongyu/HMP1-II/List.csv"  # List of specific sample names
+input_dir="/n/holylfs05/LABS/nguyen_lab/Everyone/users/zhijih/Madagascar/biobakery_output_new/rainforest/kneaddata/main/"
+output_dir="/n/holystore01/LABS/huttenhower_lab/Users/Dongyu/PET_Projetc/Results/Madagascar_human/"
+job_dir="./humann_jobs"
+sample_list="/n/netscratch/huttenhower_lab/Lab/Users/Dongyu/Madagascar/List.csv"  # CSV file containing sample names (one per line)
 
-# Ensure job directory is created and accessible
-if ! mkdir -p "$job_dir"; then
-    echo "Error: Cannot create directory $job_dir. Check permissions!" >&2
+# Create job directory if it doesn't exist
+mkdir -p "$job_dir"
+
+# Check if sample list file exists
+if [[ ! -f "$sample_list" ]]; then
+    echo "Error: Sample list file '$sample_list' not found!"
     exit 1
 fi
 
-batch_size=5  # Number of jobs per batch
-count=0       # Counter for tracking number of samples
-batch=()      # Array to store batch samples
+# Read sample names from the list and process matching files
+while IFS= read -r sample_name; do
 
-# Read file names line by line from the list
-while IFS= read -r sample || [[ -n "$sample" ]]; do
-    file="${input_dir}${sample}.fastq.gz"
+    # Construct the expected file path based on the sample name
+    file="${input_dir}${sample_name}.fastq.gz"
 
-    # Check if the FASTQ file exists before proceeding
-    if [[ -f "$file" ]]; then
-        batch+=("$sample")
-        ((count++))
-    else
-        echo "Warning: File $file not found. Skipping..."
+    # Check if the FASTQ file exists for the sample
+    if [[ ! -f "$file" ]]; then
+        echo "Warning: File $file not found, skipping..."
         continue
     fi
 
-    # If batch size is reached, submit jobs and wait
-    if (( count % batch_size == 0 )); then
-        echo "Submitting batch of $batch_size jobs..."
-        job_ids=()  # Store submitted job IDs
+    # Define job script name
+    job_script="${job_dir}/${sample_name}.slurm"
 
-        for sample in "${batch[@]}"; do
-            job_script="${job_dir}/${sample}.slurm"
+    # Ensure output directory for sample exists
+    mkdir -p "${output_dir}${sample_name}"
 
-            # Ensure output directory exists
-            mkdir -p "${output_dir}${sample}/"
-
-            # Create SLURM job script
-            cat <<EOF > "$job_script"
+    # Create SLURM job script for each valid file
+    cat <<EOF > "$job_script"
 #!/bin/bash
 #SBATCH -c 20
 #SBATCH -t 0-12:00
-#SBATCH -p test
-#SBATCH --mem=100G
-#SBATCH -o ${output_dir}${sample}/Humann_${sample}.out
-#SBATCH -e ${output_dir}${sample}/Humann_${sample}.err
+#SBATCH -p huttenhower
+#SBATCH --mem=90G
+#SBATCH -o "${output_dir}${sample_name}/${sample_name}_%j.out"
+#SBATCH -e "${output_dir}${sample_name}/${sample_name}_%j.err"
 #SBATCH --mail-user=dongyu_wang@hsph.harvard.edu
 #SBATCH --mail-type=ALL
 
@@ -58,80 +51,22 @@ hutlab load rocky8/biobakery_workflows/3.1.0-devel-dependsUpdate
 hutlab load rocky8/metaphlan4/4.0.6_vOct22_fixed
 hutlab load rocky8/humann4/4.0-alpha-1-final
 
-# Run HUMAnN with the specified input and output
-humann --threads 20 --input "$file" --output "${output_dir}${sample}/"
-
-echo "HUMAnN analysis completed for $sample"
-EOF
-
-            # Submit job and capture job ID
-            job_id=$(sbatch "$job_script" | awk '{print $4}')
-            job_ids+=("$job_id")
-            echo "Submitted job for: $sample (Job ID: $job_id)"
-        done
-
-        # Wait for the batch to finish before proceeding
-        echo "Waiting for batch to complete..."
-        for jid in "${job_ids[@]}"; do
-            while squeue -j "$jid" &> /dev/null; do
-                sleep 60  # Check every 60 seconds
-            done
-        done
-
-        echo "Batch completed. Proceeding to the next batch..."
-
-        # Reset batch array
-        batch=()
-    fi
-done < "$file_list"
-
-# Submit remaining jobs if any
-if [ ${#batch[@]} -gt 0 ]; then
-    echo "Submitting final batch of ${#batch[@]} jobs..."
-    job_ids=()
-
-    for sample in "${batch[@]}"; do
-        job_script="${job_dir}/${sample}.slurm"
-        mkdir -p "${output_dir}${sample}/"
-
-        # Create SLURM job script
-        cat <<EOF > "$job_script"
-#!/bin/bash
-#SBATCH -c 20
-#SBATCH -t 0-12:00
-#SBATCH -p test
-#SBATCH --mem=100G
-#SBATCH -o ${output_dir}${sample}/Humann_${sample}.out
-#SBATCH -e ${output_dir}${sample}/Humann_${sample}.err
-#SBATCH --mail-user=dongyu_wang@hsph.harvard.edu
-#SBATCH --mail-type=ALL
-
-# Load environment and required modules
-source /n/huttenhower_lab/tools/hutlab/src/hutlabrc_rocky8.sh
-hutlab load rocky8/biobakery_workflows/3.1.0-devel-dependsUpdate
-hutlab load rocky8/metaphlan4/4.0.6_vOct22_fixed
-hutlab load rocky8/humann4/4.0-alpha-1-final
-
-# Run HUMAnN with the specified input and output
-humann --threads 20 --input "$file" --output "${output_dir}${sample}/"
-
-echo "HUMAnN analysis completed for $sample"
-EOF
-
-        # Submit job and capture job ID
-        job_id=$(sbatch "$job_script" | awk '{print $4}')
-        job_ids+=("$job_id")
-        echo "Submitted job for: $sample (Job ID: $job_id)"
-    done
-
-    echo "Waiting for final batch to complete..."
-    for jid in "${job_ids[@]}"; do
-        while squeue -j "$jid" &> /dev/null; do
-            sleep 60  # Check every 60 seconds
-        done
-    done
-
-    echo "Final batch completed."
+# Check if HUMAnN is available before running
+if ! command -v humann &> /dev/null; then
+    echo "HUMAnN not found in the environment"
+    exit 1
 fi
+
+# Run HUMAnN with the specified input and output
+humann --threads 20 --input "$file" --output "${output_dir}${sample_name}/"
+
+echo "HUMAnN analysis completed for $sample_name"
+EOF
+
+    # Submit the job to SLURM scheduler
+    sbatch "$job_script"
+    echo "Submitted job for: $sample_name"
+
+done < "$sample_list"
 
 echo "All jobs have been submitted successfully."
